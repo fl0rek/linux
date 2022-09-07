@@ -163,4 +163,10 @@ config SAMPLE_RUST_SELFTESTS
 
 	  If unsure, say N.
 
+config SAMPLE_RUST_HELLO
+	tristate "Hello"
+	help
+	  Hello world module
+
 endif # SAMPLES_RUST
+

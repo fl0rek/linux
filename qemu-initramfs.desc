@@ -1,11 +1,17 @@
-dir     /bin                                          0755 0 0
-dir     /sys                                          0755 0 0
-dir     /dev                                          0755 0 0
-file    /bin/busybox  busybox                         0755 0 0
-slink   /bin/sh       /bin/busybox                    0755 0 0
-file    /init         .github/workflows/qemu-init.sh  0755 0 0
+dir     /bin                                          	0755 0 0
+dir     /sys                                          	0755 0 0
+dir     /proc                                          	0755 0 0
+dir     /dev                                          	0755 0 0
+slink	/sbin		/bin				0000 0 0
+dir	/usr						0755 0 0
+slink	/usr/bin 	/bin				0000 0 0
+slink	/usr/sbin 	/bin				0000 0 0
+file    /bin/busybox  	busybox                        	0755 0 0
+slink   /bin/sh       	/bin/busybox                   	0755 0 0
+file    /init         	qemu-init.sh  	 		0755 0 0
 
-file    /rust_hello.ko            samples/rust/rust_hello.ko            0755 0 0
+file    /rust_hello.ko               samples/rust/rust_hello.ko            0755 0 0
+file    /rust_fs.ko		     samples/rust/rust_fs.ko            0755 0 0
 
 #file    /rust_minimal.ko            samples/rust/rust_minimal.ko            0755 0 0
 #file    /rust_print.ko              samples/rust/rust_print.ko              0755 0 0

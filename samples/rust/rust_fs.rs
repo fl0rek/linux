@@ -14,12 +14,19 @@ module_fs! {
 
 struct RustFs;
 
+#[derive(Default)]
+struct State {
+    verbose: bool
+}
+
+
 #[vtable]
 impl fs::Context<Self> for RustFs {
-    type Data = ();
+    type Data = Box<State>;
 
-    kernel::define_fs_params! {(),
-        {flag, "flag", |_, v| { pr_info!("flag passed-in: {v}\n"); Ok(()) } },
+    kernel::define_fs_params! { Box<State>,
+        {flag, "verbose", |s, v| { s.verbose = v; Ok(()) } },
+        /*
         {flag_no, "flagno", |_, v| { pr_info!("flagno passed-in: {v}\n"); Ok(()) } },
         {bool, "bool", |_, v| { pr_info!("bool passed-in: {v}\n"); Ok(()) } },
         {u32, "u32", |_, v| { pr_info!("u32 passed-in: {v}\n"); Ok(()) } },
@@ -31,11 +38,13 @@ impl fs::Context<Self> for RustFs {
         {enum, "enum", [("first", 10), ("second", 20)], |_, v| {
             pr_info!("enum passed-in: {v}\n"); Ok(()) }
         },
+        */
     }
 
-    fn try_new() -> Result {
+    fn try_new() -> Result<Self::Data> {
         pr_info!("context created!\n");
-        Ok(())
+
+        Ok(Box::try_new(State::default())?)
     }
 }
 
@@ -45,11 +54,11 @@ impl fs::Type for RustFs {
     const NAME: &'static CStr = c_str!("rustfs");
     const FLAGS: i32 = fs::flags::USERNS_MOUNT;
 
-    fn fill_super(_data: (), sb: fs::NewSuperBlock<'_, Self>) -> Result<&fs::SuperBlock<Self>> {
+    fn fill_super(_data: Box<State>, sb: fs::NewSuperBlock<'_, Self>) -> Result<&fs::SuperBlock<Self>> {
         let sb = sb.init(
             (),
             &fs::SuperParams {
-                magic: 0x72757374,
+                magic: 0x21372137,
                 ..fs::SuperParams::DEFAULT
             },
         )?;

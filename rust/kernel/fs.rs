@@ -16,6 +16,7 @@ use core::{
     ptr,
 };
 use macros::vtable;
+use crate::prelude::*;
 
 pub mod param;
 
@@ -646,29 +647,27 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsInit> {
 impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
     /// Initialises the root of the superblock.
     pub fn init_root(self) -> Result<&'a SuperBlock<T>> {
-        // The following is temporary code to create the root inode and dentry. It will be replaced
-        // once we allow inodes and dentries to be created directly from Rust code.
+        let mut  my_inode = INode::new_sb(self.sb)?;
+
+        my_inode.set_current_time();
+        my_inode.set_mode((bindings::S_IFDIR | 0o755) as u16);
 
         // SAFETY: `sb` is initialised (`NeedsRoot` typestate implies it), so it is safe to pass it
         // to `new_inode`.
+        /*
         let inode = unsafe { bindings::new_inode(self.sb) };
         if inode.is_null() {
             return Err(ENOMEM);
         }
+        */
 
+        pr_info!("inode cell?: {:p}", my_inode.0);
+
+        //pr_info!("inode cell?: {:p}", inode);
         {
             // SAFETY: This is a newly-created inode. No other references to it exist, so it is
             // safe to mutably dereference it.
-            let inode = unsafe { &mut *inode };
-
-            // SAFETY: `current_time` requires that `inode.sb` be valid, which is the case here
-            // since we allocated the inode through the superblock.
-            let time = unsafe { bindings::current_time(inode) };
-            inode.i_ino = 1;
-            inode.i_mode = (bindings::S_IFDIR | 0o755) as _;
-            inode.i_mtime = time;
-            inode.i_atime = time;
-            inode.i_ctime = time;
+            let mut inode = unsafe { &mut *my_inode.0 };
 
             // SAFETY: `simple_dir_operations` never changes, it's safe to reference it.
             inode.__bindgen_anon_3.i_fop = unsafe { &bindings::simple_dir_operations };
@@ -684,7 +683,11 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
         // case for this call.
         //
         // It takes over the inode, even on failure, so we don't need to clean it up.
-        let dentry = unsafe { bindings::d_make_root(inode) };
+        pr_info!("before makeroot");
+        let dentry = unsafe { bindings::d_make_root(my_inode.0) };
+        let _ : () = dentry;
+        pr_info!("after makeroot");
+        //let dentry = unsafe { bindings::d_make_root(my_inode.0.get()) };
         if dentry.is_null() {
             return Err(ENOMEM);
         }
@@ -714,18 +717,55 @@ pub struct SuperBlock<T: Type + ?Sized>(
 /// Instances of this type are always ref-counted, that is, a call to `ihold` ensures that the
 /// allocation remains valid at least until the matching call to `iput`.
 #[repr(transparent)]
-pub struct INode(pub(crate) UnsafeCell<bindings::inode>);
+pub struct INode(pub(crate) *mut bindings::inode);
 
 // SAFETY: The type invariants guarantee that `INode` is always ref-counted.
 unsafe impl AlwaysRefCounted for INode {
     fn inc_ref(&self) {
         // SAFETY: The existence of a shared reference means that the refcount is nonzero.
-        unsafe { bindings::ihold(self.0.get()) };
+        unsafe { bindings::ihold(self.0) };
     }
 
     unsafe fn dec_ref(obj: ptr::NonNull<Self>) {
         // SAFETY: The safety requirements guarantee that the refcount is nonzero.
         unsafe { bindings::iput(obj.cast().as_ptr()) }
+    }
+}
+
+impl INode {
+    /*
+    pub(crate) fn new<T : Type>(sb: &SuperBlock<T>) -> Result<INode> {
+        Self::new_sb(sb.0.get())
+    }
+    */
+
+    fn new_sb(sb: *mut bindings::super_block) -> Result<Self> {
+        pr_info!("new inode\n");
+        let inode = unsafe { bindings::new_inode(sb) };
+        if inode.is_null() {
+            return Err(ENOMEM);
+        }
+
+        {
+            let mut inode = unsafe { &mut *inode };
+            inode.i_ino = unsafe { bindings::get_next_ino() }.into();
+        }
+
+        let cell = INode(inode);
+        Ok(cell)
+    }
+
+    fn set_current_time(&mut self) {
+        let time = unsafe { bindings::current_time(self.0) };
+        let mut inode = unsafe { &mut *self.0 };
+        inode.i_mtime = time;
+        inode.i_atime = time;
+        inode.i_ctime = time;
+    }
+
+    fn set_mode(&mut self, mode: u16) {
+        let mut inode = unsafe { &mut *self.0 };
+        inode.i_mode = mode;
     }
 }
 

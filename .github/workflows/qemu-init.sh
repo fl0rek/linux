@@ -1,5 +1,13 @@
 #!/bin/sh
 
+busybox modinfo rust_hello.ko
+busybox  insmod rust_hello.ko
+buxybox   lsmod
+busybox   rmmod rust_hello.ko
+
+busybox sleep 5
+busybox reboot -f
+
 busybox insmod rust_minimal.ko
 busybox  rmmod rust_minimal.ko
 
