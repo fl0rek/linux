@@ -12,7 +12,9 @@ module_fs! {
     license: "GPL",
 }
 
-struct RustFs;
+struct RustFs {
+    _dev: Pin<Box<fs::Registration>>,
+}
 
 #[derive(Default)]
 struct State {
@@ -66,3 +68,4 @@ impl fs::Type for RustFs {
         Ok(sb)
     }
 }
+

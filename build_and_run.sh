@@ -12,7 +12,7 @@ sudo qemu-system-x86_64 \
 	-M pc \
 	-m 1G \
 	-cpu Cascadelake-Server \
-	-smp 2 \
+	-smp 1 \
 	-nographic \
 	-vga none \
 	-no-reboot \

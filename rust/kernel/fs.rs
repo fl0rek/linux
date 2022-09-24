@@ -335,6 +335,73 @@ impl<T: Type + ?Sized> Tables<T> {
     };
 }
 
+const RUST_RAMFS_FILE_OPERATIONS: bindings::file_operations = bindings::file_operations {
+	read_iter: Some(bindings::generic_file_read_iter),
+	write_iter: Some(bindings::generic_file_write_iter),
+	mmap: Some(bindings::generic_file_mmap),
+	fsync: Some(bindings::noop_fsync),
+	splice_read: Some(bindings::generic_file_splice_read),
+	splice_write: Some(bindings::iter_file_splice_write),
+	llseek: Some(bindings::generic_file_llseek),
+	//get_unmapped_area: Some(bindings::ramfs_mmu_get_unmapped_area),
+    owner: core::ptr::null_mut(),
+
+    check_flags: None,
+    compat_ioctl: None,
+    copy_file_range: None,
+    fadvise: None,
+    fallocate: None,
+    fasync: None,
+    flock: None,
+    flush: None,
+    get_unmapped_area: None,
+    iopoll: None,
+    iterate: None,
+    iterate_shared: None,
+    lock: None,
+    mmap_supported_flags: 0, // ??,
+    open: None,
+    poll: None,
+    read: None,
+    release: None,
+    remap_file_range: None,
+    sendpage: None,
+    setlease: None,
+    show_fdinfo: None,
+    unlocked_ioctl: None,
+    uring_cmd: None,
+    write: None,
+};
+
+const RUST_RAMFS_INODE_OPERATIONS: bindings::inode_operations = bindings::inode_operations {
+    atomic_open: None,
+    create: None,
+    fiemap: None,
+    fileattr_get: None,
+    fileattr_set: None,
+    get_acl: None,
+    get_link: None,
+    getattr: None,
+    link: None,
+    listxattr: None,
+    lookup: None,
+    mkdir: None,
+    mknod: None,
+    permission: None,
+    readlink: None,
+    rename: None,
+    rmdir: None,
+    set_acl: None,
+    setattr: None,
+    symlink: None,
+    tmpfile: None,
+    unlink: None,
+    update_time: None,
+};
+
+//static SIMPLE_DIR_OPERATIONS: *const bindings::file_operations = unsafe { &bindings::simple_dir_operations };
+//static SIMPLE_DIR_INODE_OPERATIONS: *const bindings::inode_operations = unsafe { &bindings::simple_dir_inode_operations};
+
 /// A file system type.
 pub trait Type {
     /// The context used to build fs configuration before it is mounted or reconfigured.
@@ -422,6 +489,7 @@ impl Registration {
     ///
     /// It is automatically unregistered when the registration is dropped.
     pub fn register<T: Type + ?Sized>(self: Pin<&mut Self>, module: &'static ThisModule) -> Result {
+        pr_info!("doing register\n");
         // SAFETY: We never move out of `this`.
         let this = unsafe { self.get_unchecked_mut() };
 
@@ -462,6 +530,7 @@ impl Registration {
         to_result(unsafe { bindings::register_filesystem(ptr) })?;
         key_guard.dismiss();
         this.is_registered = true;
+        pr_info!("registered\n");
         Ok(())
     }
 
@@ -663,17 +732,15 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
 
         pr_info!("inode cell?: {:p}", my_inode.0);
 
+        let simple_dir_operations = unsafe { &bindings::simple_dir_operations };
+        let simple_dir_inode_operations = unsafe { &bindings::simple_dir_inode_operations };
+        my_inode.set_operations(simple_dir_operations, simple_dir_inode_operations);
+
         //pr_info!("inode cell?: {:p}", inode);
         {
             // SAFETY: This is a newly-created inode. No other references to it exist, so it is
             // safe to mutably dereference it.
             let mut inode = unsafe { &mut *my_inode.0 };
-
-            // SAFETY: `simple_dir_operations` never changes, it's safe to reference it.
-            inode.__bindgen_anon_3.i_fop = unsafe { &bindings::simple_dir_operations };
-
-            // SAFETY: `simple_dir_inode_operations` never changes, it's safe to reference it.
-            inode.i_op = unsafe { &bindings::simple_dir_inode_operations };
 
             // SAFETY: `inode` is valid for write.
             unsafe { bindings::set_nlink(inode, 2) };
@@ -685,11 +752,37 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
         // It takes over the inode, even on failure, so we don't need to clean it up.
         pr_info!("before makeroot");
         let dentry = unsafe { bindings::d_make_root(my_inode.0) };
-        let _ : () = dentry;
         pr_info!("after makeroot");
-        //let dentry = unsafe { bindings::d_make_root(my_inode.0.get()) };
+
         if dentry.is_null() {
             return Err(ENOMEM);
+        }
+
+        let dirs = [ b"dir1\x00", b"dir2\x00" ];
+        pr_info!("dir iter");
+        for dir in dirs {
+            let cname = CStr::from_bytes_with_nul(dir)?;
+            match mkdir(cname, dentry) {
+                Ok(_) => (),
+                Err(e) => {
+                    pr_err!("Failed to create dir: {e:?}");
+                    return Err(ENOMEM);
+                }
+            }
+        }
+
+        let files = [ b"foo\x00", b"bar\x00" ];
+        pr_info!("pre iter");
+        for file in files {
+            pr_info!("Iter1: {file:?}");
+            let cname = CStr::from_bytes_with_nul(file)?;
+            match touch(cname, dentry) {
+                Ok(_) => (),
+                Err(e) => {
+                    pr_err!("Failed to create file: {e:?}");
+                    return Err(ENOMEM);
+                }
+            }
         }
 
         // SAFETY: The typestate guarantees that `self.sb` is valid.
@@ -699,6 +792,45 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
         // setting its root, so it's a fully ready superblock.
         Ok(unsafe { &mut *self.sb.cast() })
     }
+}
+
+fn create(name: &CStr, parent_dentry: *mut bindings::dentry, mode: u16) -> Result<INode> {
+    let new_dentry = unsafe { bindings::d_alloc_name(parent_dentry, name.as_char_ptr() as *const i8) };
+
+    if new_dentry.is_null() {
+        return Err(ENOMEM);
+    }
+
+    let mut new_inode = INode::new_sb(unsafe {(*parent_dentry).d_sb } )?;
+    new_inode.set_current_time();
+    new_inode.set_mode(mode);
+
+    unsafe { bindings::d_add(new_dentry, new_inode.0); }
+
+    Ok(new_inode)
+}
+
+/**
+ * create directory with `name` in `parent_dentry`
+ */
+pub fn mkdir(name: &CStr, parent_dentry: *mut bindings::dentry) -> Result<()> {
+    let mut inode = create(name, parent_dentry, (bindings::S_IFDIR | 0o755) as u16)?;
+
+    let simple_dir_operations = unsafe { &bindings::simple_dir_operations };
+    let simple_dir_inode_operations = unsafe { &bindings::simple_dir_inode_operations };
+    inode.set_operations(simple_dir_operations, simple_dir_inode_operations);
+
+    Ok(())
+}
+
+/**
+ * create file with `name` in `parent_dentry`
+ */
+pub fn touch(name: &CStr, parent_dentry: *mut bindings::dentry) -> Result<()> {
+    let mut inode = create(name, parent_dentry, (bindings::S_IFREG | 0o755) as u16)?;
+    inode.set_operations(&RUST_RAMFS_FILE_OPERATIONS, &RUST_RAMFS_INODE_OPERATIONS);
+
+    Ok(())
 }
 
 /// A file system super block.
@@ -746,9 +878,35 @@ impl INode {
             return Err(ENOMEM);
         }
 
+        pr_info!("set ino");
         {
             let mut inode = unsafe { &mut *inode };
             inode.i_ino = unsafe { bindings::get_next_ino() }.into();
+        }
+
+        // GFP_HIGHUSER is for userspace allocations that may be mapped to userspace, do not need
+        // to be directly accessible by the kernel but that cannot move once in use. An example may
+        // be a hardware allocation that maps data directly into userspace but has no addressing
+        // limitations.
+        //  mapping_set_gfp_mask is inline ...
+        //bindings::mapping_set_gfp_mask((*inode).i_mapping, bindings::GFP_HIGHUSER);
+        // XXX
+        unsafe {
+        (*(*inode).i_mapping).gfp_mask = bindings::___GFP_HIGHMEM
+            //| bindings::___GFP_RECLAIM
+            | bindings::___GFP_DIRECT_RECLAIM
+            | bindings::___GFP_KSWAPD_RECLAIM
+            | bindings::___GFP_IO
+            | bindings::___GFP_FS
+            | bindings::___GFP_HARDWALL;
+        }
+
+        unsafe {
+            (*(*inode).i_mapping).a_ops = &bindings::ram_aops;
+        }
+
+        unsafe {
+            (*(*inode).i_mapping).flags |= bindings::mapping_flags_AS_UNEVICTABLE as u64;
         }
 
         let cell = INode(inode);
@@ -766,6 +924,12 @@ impl INode {
     fn set_mode(&mut self, mode: u16) {
         let mut inode = unsafe { &mut *self.0 };
         inode.i_mode = mode;
+    }
+
+    fn set_operations(&mut self, fop: &bindings::file_operations, op: &bindings::inode_operations) {
+        let mut inode = unsafe { &mut *self.0 };
+        inode.__bindgen_anon_3.i_fop = fop;
+        inode.i_op = op;
     }
 }
 

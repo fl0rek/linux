@@ -37,7 +37,9 @@
 #include <linux/uaccess.h>
 #include <linux/uio.h>
 #include <uapi/linux/android/binder.h>
-#include <linux/usb.h>
+#include <linux/pagemap.h>
+//#include "include/linux/gfp.h"
+#include <linux/gfp_api.h>
 
 /* `bindgen` gets confused at certain things. */
 const gfp_t BINDINGS_GFP_KERNEL = GFP_KERNEL;
