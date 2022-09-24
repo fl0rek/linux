@@ -15,4 +15,6 @@ insmod rust_fs.ko
 mkdir rustfs
 mount -t rustfs none rustfs
 
+cd rustfs
+
 busybox setsid sh -c 'exec sh -l </dev/ttyS0 >/dev/ttyS0 2>&1'

@@ -399,6 +399,145 @@ const RUST_RAMFS_INODE_OPERATIONS: bindings::inode_operations = bindings::inode_
     update_time: None,
 };
 
+const RUST_RAMFS_DIR_INODE_OPERATIONS: bindings::inode_operations = bindings::inode_operations {
+    atomic_open: None,
+    create: Some(rust_ramfs_create),
+    fiemap: None,
+    fileattr_get: None,
+    fileattr_set: None,
+    get_acl: None,
+    get_link: None,
+    getattr: None,
+    link: Some(bindings::simple_link),
+    listxattr: None,
+    lookup: Some(bindings::simple_lookup),
+    mkdir: Some(rust_ramfs_mkdir),
+    mknod: Some(rust_ramfs_mknod),
+    permission: None,
+    readlink: None,
+    rename: Some(bindings::simple_rename),
+    rmdir: Some(bindings::simple_rmdir),
+    set_acl: None,
+    setattr: None,
+    symlink: None, // TODO
+    tmpfile: Some(rust_ramfs_tmpfile),
+    unlink: Some(bindings::simple_unlink),
+    update_time: None,
+};
+
+unsafe extern "C" fn rust_ramfs_tmpfile(_mnt_userns: *mut bindings::user_namespace,
+                                       dir: *mut bindings::inode,
+                                       new_dentry: *mut bindings::dentry,
+                                       mode: bindings::umode_t) -> core::ffi::c_int {
+    let superblock = unsafe { (*dir).i_sb };
+    let new_inode = match rust_create_inode(superblock, dir, mode, 0) {
+        Ok(inode) => inode,
+        Err(e) => {
+            pr_err!("Failed to mknod: {e:?}");
+            return -(bindings::ENOSPC as i32);
+        }
+    };
+
+    unsafe { bindings::d_tmpfile(new_dentry, new_inode.0); }
+
+    0
+}
+
+unsafe extern "C" fn rust_ramfs_create(_mnt_userns: *mut bindings::user_namespace,
+                                       dir: *mut bindings::inode,
+                                       new_dentry: *mut bindings::dentry,
+                                       mode: bindings::umode_t,
+                                       _excl: bool) -> core::ffi::c_int {
+    unsafe { rust_ramfs_mknod(&mut bindings::init_user_ns, dir, new_dentry, mode | bindings::S_IFREG as u16, 0) }
+}
+
+unsafe extern "C" fn rust_ramfs_mkdir(_mnt_userns: *mut bindings::user_namespace,
+                                      dir: *mut bindings::inode,
+                                      new_dentry: *mut bindings::dentry,
+                                      mode: bindings::umode_t) -> core::ffi::c_int {
+    match unsafe { rust_ramfs_mknod(&mut bindings::init_user_ns, dir, new_dentry, mode | bindings::S_IFDIR as u16, 0) } {
+        0 => {
+            unsafe { bindings::inc_nlink(dir); }
+            0
+        }
+        err => err
+    }
+}
+
+fn rust_create_inode(sb: *mut bindings::super_block,
+                    dir: *const bindings::inode,
+                    mode: bindings::umode_t,
+                    dev:bindings::dev_t) ->Result<INode> {
+    let mut inode = INode::new_sb(sb)?;
+
+    unsafe {
+        bindings::inode_init_owner(&mut bindings::init_user_ns, inode.0 , dir, mode);
+    }
+    inode.set_current_time();
+
+    match mode as u32 & bindings::S_IFMT {
+        bindings::S_IFREG => {
+            inode.set_operations(&RUST_RAMFS_FILE_OPERATIONS, &RUST_RAMFS_INODE_OPERATIONS);
+        }
+        bindings::S_IFDIR => {
+            let simple_dir_operations = unsafe { &bindings::simple_dir_operations };
+            inode.set_operations(simple_dir_operations, &RUST_RAMFS_DIR_INODE_OPERATIONS);
+            unsafe { bindings::inc_nlink(inode.0) };
+        }
+        other => {
+            pr_err!("unimplemented!");
+            //return Err(Error(-(bindings::ENOSPC as i32)));
+            return Err(crate::error::code::ENOSPC);
+        }
+    };
+    Ok(inode)
+}
+
+unsafe extern "C" fn rust_ramfs_mknod(_mnt_userns: *mut bindings::user_namespace,
+                                      dir: *mut bindings::inode,
+                                      new_dentry: *mut bindings::dentry,
+                                      mode: bindings::umode_t,
+                                      _dev: bindings::dev_t) -> core::ffi::c_int {
+    let superblock = unsafe { (*dir).i_sb };
+ //INode::new_sb(superblock) {
+    let mut new_inode = match rust_create_inode(superblock, dir, mode, 0) {
+        Ok(inode) => inode,
+        Err(e) => {
+            pr_err!("Failed to mknod: {e:?}");
+            return -(bindings::ENOSPC as i32);
+        }
+    };
+
+
+    unsafe { bindings::d_instantiate(new_dentry, new_inode.0) };
+    unsafe { bindings::dget(new_dentry) };
+
+    0
+}
+
+/*
+static int ramfs_create(struct user_namespace *mnt_userns, struct inode *dir,
+			struct dentry *dentry, umode_t mode, bool excl)
+{
+	return ramfs_mknod(&init_user_ns, dir, dentry, mode | S_IFREG, 0);
+
+static int
+ramfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
+	    struct dentry *dentry, umode_t mode, dev_t dev)
+{
+	struct inode * inode = ramfs_get_inode(dir->i_sb, dir, mode, dev);
+	int error = -ENOSPC;
+
+	if (inode) {
+		d_instantiate(dentry, inode);
+		dget(dentry);	/* Extra count - pin the dentry in core */
+		error = 0;
+		dir->i_mtime = dir->i_ctime = current_time(dir);
+	}
+	return error;
+}
+    */
+
 //static SIMPLE_DIR_OPERATIONS: *const bindings::file_operations = unsafe { &bindings::simple_dir_operations };
 //static SIMPLE_DIR_INODE_OPERATIONS: *const bindings::inode_operations = unsafe { &bindings::simple_dir_inode_operations};
 
@@ -716,10 +855,10 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsInit> {
 impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
     /// Initialises the root of the superblock.
     pub fn init_root(self) -> Result<&'a SuperBlock<T>> {
-        let mut  my_inode = INode::new_sb(self.sb)?;
+        let mut root_inode = INode::new_sb(self.sb)?;
 
-        my_inode.set_current_time();
-        my_inode.set_mode((bindings::S_IFDIR | 0o755) as u16);
+        root_inode.set_current_time();
+        root_inode.set_mode((bindings::S_IFDIR | 0o755) as u16);
 
         // SAFETY: `sb` is initialised (`NeedsRoot` typestate implies it), so it is safe to pass it
         // to `new_inode`.
@@ -730,18 +869,21 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
         }
         */
 
-        pr_info!("inode cell?: {:p}", my_inode.0);
+        pr_info!("inode cell?: {:p}", root_inode.0);
 
         let simple_dir_operations = unsafe { &bindings::simple_dir_operations };
-        let simple_dir_inode_operations = unsafe { &bindings::simple_dir_inode_operations };
-        my_inode.set_operations(simple_dir_operations, simple_dir_inode_operations);
+        root_inode.set_operations(simple_dir_operations, &RUST_RAMFS_DIR_INODE_OPERATIONS);
 
         //pr_info!("inode cell?: {:p}", inode);
         {
             // SAFETY: This is a newly-created inode. No other references to it exist, so it is
             // safe to mutably dereference it.
-            let mut inode = unsafe { &mut *my_inode.0 };
+            let mut inode = unsafe { &mut *root_inode.0 };
 
+
+            unsafe {
+                bindings::inode_init_owner(&mut bindings::init_user_ns, inode, core::ptr::null(), 0o755 | bindings::S_IFDIR as u16);
+            }
             // SAFETY: `inode` is valid for write.
             unsafe { bindings::set_nlink(inode, 2) };
         }
@@ -751,7 +893,7 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
         //
         // It takes over the inode, even on failure, so we don't need to clean it up.
         pr_info!("before makeroot");
-        let dentry = unsafe { bindings::d_make_root(my_inode.0) };
+        let dentry = unsafe { bindings::d_make_root(root_inode.0) };
         pr_info!("after makeroot");
 
         if dentry.is_null() {
@@ -762,7 +904,7 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
         pr_info!("dir iter");
         for dir in dirs {
             let cname = CStr::from_bytes_with_nul(dir)?;
-            match mkdir(cname, dentry) {
+            match mkdir(cname, root_inode.0, dentry) {
                 Ok(_) => (),
                 Err(e) => {
                     pr_err!("Failed to create dir: {e:?}");
@@ -776,7 +918,7 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
         for file in files {
             pr_info!("Iter1: {file:?}");
             let cname = CStr::from_bytes_with_nul(file)?;
-            match touch(cname, dentry) {
+            match touch(cname, root_inode.0, dentry) {
                 Ok(_) => (),
                 Err(e) => {
                     pr_err!("Failed to create file: {e:?}");
@@ -794,14 +936,17 @@ impl<'a, T: Type + ?Sized> NewSuperBlock<'a, T, NeedsRoot> {
     }
 }
 
-fn create(name: &CStr, parent_dentry: *mut bindings::dentry, mode: u16) -> Result<INode> {
+fn create(name: &CStr, parent_inode: *mut bindings::inode, parent_dentry: *mut bindings::dentry, mode: u16) -> Result<INode> {
     let new_dentry = unsafe { bindings::d_alloc_name(parent_dentry, name.as_char_ptr() as *const i8) };
 
     if new_dentry.is_null() {
         return Err(ENOMEM);
     }
 
-    let mut new_inode = INode::new_sb(unsafe {(*parent_dentry).d_sb } )?;
+    let superblock = unsafe { (*parent_inode).i_sb };
+    let mut new_inode = rust_create_inode(superblock, parent_inode, mode, 0)?;
+
+    //let mut new_inode = INode::new_sb(unsafe {(*parent_dentry).d_sb } )?;
     new_inode.set_current_time();
     new_inode.set_mode(mode);
 
@@ -813,12 +958,11 @@ fn create(name: &CStr, parent_dentry: *mut bindings::dentry, mode: u16) -> Resul
 /**
  * create directory with `name` in `parent_dentry`
  */
-pub fn mkdir(name: &CStr, parent_dentry: *mut bindings::dentry) -> Result<()> {
-    let mut inode = create(name, parent_dentry, (bindings::S_IFDIR | 0o755) as u16)?;
+pub fn mkdir(name: &CStr, parent_inode: *mut bindings::inode, parent_dentry: *mut bindings::dentry) -> Result<()> {
+    let mut inode = create(name, parent_inode, parent_dentry, (bindings::S_IFDIR | 0o755) as u16)?;
 
     let simple_dir_operations = unsafe { &bindings::simple_dir_operations };
-    let simple_dir_inode_operations = unsafe { &bindings::simple_dir_inode_operations };
-    inode.set_operations(simple_dir_operations, simple_dir_inode_operations);
+    inode.set_operations(simple_dir_operations, &RUST_RAMFS_DIR_INODE_OPERATIONS);
 
     Ok(())
 }
@@ -826,11 +970,12 @@ pub fn mkdir(name: &CStr, parent_dentry: *mut bindings::dentry) -> Result<()> {
 /**
  * create file with `name` in `parent_dentry`
  */
-pub fn touch(name: &CStr, parent_dentry: *mut bindings::dentry) -> Result<()> {
-    let mut inode = create(name, parent_dentry, (bindings::S_IFREG | 0o755) as u16)?;
+pub fn touch(name: &CStr, parent_inode: *mut bindings::inode, parent_dentry: *mut bindings::dentry) -> Result<INode> {
+    let mut inode = create(name, parent_inode, parent_dentry, (bindings::S_IFREG | 0o755) as u16)?;
+
     inode.set_operations(&RUST_RAMFS_FILE_OPERATIONS, &RUST_RAMFS_INODE_OPERATIONS);
 
-    Ok(())
+    Ok(inode)
 }
 
 /// A file system super block.
@@ -910,6 +1055,7 @@ impl INode {
         }
 
         let cell = INode(inode);
+
         Ok(cell)
     }
 
