@@ -419,7 +419,7 @@ const RUST_RAMFS_DIR_INODE_OPERATIONS: bindings::inode_operations = bindings::in
     rmdir: Some(bindings::simple_rmdir),
     set_acl: None,
     setattr: None,
-    symlink: None, // TODO
+    symlink: Some(rust_ramfs_symlink),
     tmpfile: Some(rust_ramfs_tmpfile),
     unlink: Some(bindings::simple_unlink),
     update_time: None,
@@ -465,9 +465,9 @@ unsafe extern "C" fn rust_ramfs_mkdir(_mnt_userns: *mut bindings::user_namespace
 }
 
 fn rust_create_inode(sb: *mut bindings::super_block,
-                    dir: *const bindings::inode,
+                    dir: *mut bindings::inode,
                     mode: bindings::umode_t,
-                    dev:bindings::dev_t) ->Result<INode> {
+                    dev: bindings::dev_t) ->Result<INode> {
     let mut inode = INode::new_sb(sb)?;
 
     unsafe {
@@ -484,10 +484,14 @@ fn rust_create_inode(sb: *mut bindings::super_block,
             inode.set_operations(simple_dir_operations, &RUST_RAMFS_DIR_INODE_OPERATIONS);
             unsafe { bindings::inc_nlink(inode.0) };
         }
-        other => {
-            pr_err!("unimplemented!");
-            //return Err(Error(-(bindings::ENOSPC as i32)));
-            return Err(crate::error::code::ENOSPC);
+        bindings::S_IFLNK => {
+            let page_symlink_inode_operations = unsafe { &bindings::page_symlink_inode_operations };
+            //inode.set_operations(core::ptr::null(), page_symlink_inode_operations);
+            unsafe { (*inode.0).i_op = page_symlink_inode_operations };
+            unsafe { bindings::inode_nohighmem(inode.0) }
+        }
+        _ => {
+            unsafe { bindings::init_special_inode(inode.0, mode, dev); }
         }
     };
     Ok(inode)
@@ -499,7 +503,6 @@ unsafe extern "C" fn rust_ramfs_mknod(_mnt_userns: *mut bindings::user_namespace
                                       mode: bindings::umode_t,
                                       _dev: bindings::dev_t) -> core::ffi::c_int {
     let superblock = unsafe { (*dir).i_sb };
- //INode::new_sb(superblock) {
     let mut new_inode = match rust_create_inode(superblock, dir, mode, 0) {
         Ok(inode) => inode,
         Err(e) => {
@@ -508,38 +511,42 @@ unsafe extern "C" fn rust_ramfs_mknod(_mnt_userns: *mut bindings::user_namespace
         }
     };
 
-
     unsafe { bindings::d_instantiate(new_dentry, new_inode.0) };
     unsafe { bindings::dget(new_dentry) };
 
     0
 }
 
-/*
-static int ramfs_create(struct user_namespace *mnt_userns, struct inode *dir,
-			struct dentry *dentry, umode_t mode, bool excl)
-{
-	return ramfs_mknod(&init_user_ns, dir, dentry, mode | S_IFREG, 0);
+unsafe extern "C" fn rust_ramfs_symlink(_mnt_userns: *mut bindings::user_namespace,
+                                        dir: *mut bindings::inode,
+                                        new_dentry: *mut bindings::dentry,
+                                        symname: *const core::ffi::c_char) -> core::ffi::c_int {
+    let superblock = unsafe { (*dir).i_sb };
+    let symlink_mode = (bindings::S_IFLNK | bindings::S_IRWXUGO) as u16;
+    let mut new_inode = match rust_create_inode(superblock, dir, symlink_mode, 0) {
+        Ok(inode) => inode,
+        Err(e) => {
+            pr_err!("Failed to mknod: {e:?}");
+            return -(bindings::ENOSPC as i32);
+        }
+    };
 
-static int
-ramfs_mknod(struct user_namespace *mnt_userns, struct inode *dir,
-	    struct dentry *dentry, umode_t mode, dev_t dev)
-{
-	struct inode * inode = ramfs_get_inode(dir->i_sb, dir, mode, dev);
-	int error = -ENOSPC;
+    let name = unsafe { CStr::from_char_ptr(symname) };
+    let len = name.len() as i32 + 1;
 
-	if (inode) {
-		d_instantiate(dentry, inode);
-		dget(dentry);	/* Extra count - pin the dentry in core */
-		error = 0;
-		dir->i_mtime = dir->i_ctime = current_time(dir);
-	}
-	return error;
+    match unsafe { bindings::page_symlink(new_inode.0, symname, len) } {
+        0 => {
+            unsafe { bindings::d_instantiate(new_dentry, new_inode.0); }
+            unsafe { bindings::dget(new_dentry); }
+            new_inode.set_current_time();
+            0
+        }
+        err => {
+            unsafe { bindings::iput(new_inode.0); }
+            err
+        }
+    }
 }
-    */
-
-//static SIMPLE_DIR_OPERATIONS: *const bindings::file_operations = unsafe { &bindings::simple_dir_operations };
-//static SIMPLE_DIR_INODE_OPERATIONS: *const bindings::inode_operations = unsafe { &bindings::simple_dir_inode_operations};
 
 /// A file system type.
 pub trait Type {
