@@ -1,5 +1,9 @@
-# Rust for Linux
+Rust for Linux
+==============
 
+This fork contains a simple implementation of ramfs in rust for "Rust in Linux. Ramfs in Rust" webinar at Altimetrik.  You can read the [associated article](https://altimetrikpoland.medium.com/rust-in-the-linux-e724ab4f1bad) for deeper dive into code.
+
+# Upstream
 The goal of this project is to add support for the Rust language to the Linux kernel. This repository contains the work that will be eventually submitted for review to the LKML.
 
 Feel free to [contribute](https://github.com/Rust-for-Linux/linux/contribute)! To start, take a look at [`Documentation/rust`](https://github.com/Rust-for-Linux/linux/tree/rust/Documentation/rust).
